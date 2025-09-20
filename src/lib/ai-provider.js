@@ -39,6 +39,210 @@ export class AIProvider {
   }
 
   /**
+   * Generate course with streaming support (new method for Phase 2)
+   */
+  async generateCourseStream(courseData, options = {}) {
+    const {
+      provider = 'openai',
+      model = 'gpt-4o-mini',
+      maxTokens = 4000,
+      temperature = 0.7
+    } = options
+
+    const prompt = CoursePromptBuilder.buildCoursePrompt(courseData)
+    
+    try {
+      const modelInstance = this.getModel(provider, model)
+      
+      const result = await streamText({
+        model: modelInstance,
+        prompt,
+        maxTokens,
+        temperature,
+      })
+
+      // Return async generator for streaming
+      return this.createStreamGenerator(result, { provider, model, maxTokens, temperature })
+    } catch (error) {
+      console.error('AI generation error:', error)
+      throw new Error(`Failed to generate course: ${error.message}`)
+    }
+  }
+
+  /**
+   * Generate course without streaming (for compatibility)
+   */
+  async generateCourse(courseData, options = {}) {
+    const {
+      provider = 'openai',
+      model = 'gpt-4o-mini',
+      maxTokens = 4000,
+      temperature = 0.7
+    } = options
+
+    const prompt = CoursePromptBuilder.buildCoursePrompt(courseData)
+    
+    try {
+      const modelInstance = this.getModel(provider, model)
+      
+      const result = await generateText({
+        model: modelInstance,
+        prompt,
+        maxTokens,
+        temperature,
+      })
+
+      return {
+        content: result.text,
+        tokens_used: result.usage?.totalTokens || 0,
+        estimated_cost: this.calculateCost(result.usage, model),
+        structure: this.parseStructure(result.text)
+      }
+    } catch (error) {
+      console.error('AI generation error:', error)
+      throw new Error(`Failed to generate course: ${error.message}`)
+    }
+  }
+
+  /**
+   * Create async generator for streaming responses
+   */
+  async* createStreamGenerator(streamResult, metadata) {
+    let accumulatedContent = ''
+    let tokenCount = 0
+
+    // Send initial status
+    yield {
+      type: 'status',
+      message: 'Initializing course generation...',
+      progress: 5
+    }
+
+    try {
+      for await (const chunk of streamResult.textStream) {
+        accumulatedContent += chunk
+        tokenCount += this.estimateTokensInChunk(chunk)
+
+        // Calculate progress
+        const progress = Math.min(10 + (tokenCount / metadata.maxTokens) * 80, 90)
+
+        // Yield content chunk
+        yield {
+          type: 'content',
+          content: chunk,
+          tokens: this.estimateTokensInChunk(chunk),
+          progress,
+          accumulated: accumulatedContent
+        }
+
+        // Yield periodic status updates
+        if (tokenCount % 50 === 0) {
+          yield {
+            type: 'status',
+            message: `Generating course content... (${tokenCount} tokens)`,
+            progress
+          }
+        }
+      }
+
+      // Final processing
+      yield {
+        type: 'status',
+        message: 'Finalizing course structure...',
+        progress: 95
+      }
+
+      // Parse structure from content
+      const structure = this.parseStructure(accumulatedContent)
+
+      yield {
+        type: 'complete',
+        content: accumulatedContent,
+        tokens_used: tokenCount,
+        estimated_cost: this.calculateCost({ totalTokens: tokenCount }, metadata.model),
+        structure,
+        progress: 100
+      }
+
+    } catch (error) {
+      yield {
+        type: 'error',
+        error: error.message
+      }
+    }
+  }
+
+  /**
+   * Parse course structure from generated content
+   */
+  parseStructure(content) {
+    try {
+      const structure = {
+        modules: [],
+        overview: '',
+        objectives: []
+      }
+
+      // Extract course overview
+      const overviewMatch = content.match(/## Course Overview\s*([\s\S]*?)(?=##|$)/i)
+      if (overviewMatch) {
+        structure.overview = overviewMatch[1].trim()
+      }
+
+      // Extract learning objectives
+      const objectivesMatch = content.match(/learning objectives?:?\s*([\s\S]*?)(?=##|\n\n)/i)
+      if (objectivesMatch) {
+        const objectives = objectivesMatch[1]
+          .split(/[-*]\s+/)
+          .filter(obj => obj.trim())
+          .map(obj => obj.trim())
+        structure.objectives = objectives
+      }
+
+      // Extract modules
+      const moduleMatches = content.matchAll(/## Module \d+:?\s*([^\n]+)\s*([\s\S]*?)(?=## Module|\n## |$)/gi)
+      for (const match of moduleMatches) {
+        const moduleTitle = match[1].trim()
+        const moduleContent = match[2].trim()
+        
+        structure.modules.push({
+          title: moduleTitle,
+          content: moduleContent,
+          lessons: this.extractLessons(moduleContent)
+        })
+      }
+
+      return structure
+    } catch (error) {
+      console.warn('Error parsing course structure:', error)
+      return {}
+    }
+  }
+
+  /**
+   * Extract lessons from module content
+   */
+  extractLessons(moduleContent) {
+    const lessons = []
+    const lessonMatches = moduleContent.matchAll(/### Lesson \d+:?\s*([^\n]+)/gi)
+    
+    for (const match of lessonMatches) {
+      lessons.push({
+        title: match[1].trim()
+      })
+    }
+    
+    return lessons
+  }
+
+  /**
+   * Estimate tokens in a text chunk
+   */
+  estimateTokensInChunk(chunk) {
+    return Math.ceil(chunk.length / 4) // Rough estimation: 1 token ≈ 4 characters
+  }
+
+  /**
    * Get model instance
    */
   getModel(provider, model) {
