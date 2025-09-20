@@ -39,17 +39,26 @@ export class AIProvider {
   }
 
   /**
-   * Generate course with streaming support (new method for Phase 2)
+   * Generate course with streaming support (Enhanced with advanced prompt engineering)
    */
   async generateCourseStream(courseData, options = {}) {
     const {
       provider = 'openai',
       model = 'gpt-4o-mini',
       maxTokens = 4000,
-      temperature = 0.7
+      temperature = 0.7,
+      userProfile = null,
+      qualityValidation = true
     } = options
 
-    const prompt = CoursePromptBuilder.buildCoursePrompt(courseData)
+    // Use advanced prompt engineering
+    const { promptBuilder } = await import('./prompt-engineering.js');
+    const prompt = promptBuilder.buildCoursePrompt(courseData, userProfile, {
+      includeExamples: true,
+      emphasizeActionable: true,
+      avoidGenericContent: true,
+      includeAssessments: true
+    });
     
     try {
       const modelInstance = this.getModel(provider, model)
@@ -61,8 +70,15 @@ export class AIProvider {
         temperature,
       })
 
-      // Return async generator for streaming
-      return this.createStreamGenerator(result, { provider, model, maxTokens, temperature })
+      // Return async generator for streaming with quality validation
+      return this.createStreamGenerator(result, { 
+        provider, 
+        model, 
+        maxTokens, 
+        temperature,
+        qualityValidation,
+        userProfile
+      })
     } catch (error) {
       console.error('AI generation error:', error)
       throw new Error(`Failed to generate course: ${error.message}`)
@@ -105,16 +121,23 @@ export class AIProvider {
   }
 
   /**
-   * Create async generator for streaming responses
+   * Create async generator for streaming responses with quality validation
    */
   async* createStreamGenerator(streamResult, metadata) {
     let accumulatedContent = ''
     let tokenCount = 0
+    let qualityValidator = null
+
+    // Initialize quality validator if enabled
+    if (metadata.qualityValidation) {
+      const { qualityValidator: QualityValidator } = await import('./prompt-engineering.js');
+      qualityValidator = QualityValidator;
+    }
 
     // Send initial status
     yield {
       type: 'status',
-      message: 'Initializing course generation...',
+      message: 'Initializing advanced course generation...',
       progress: 5
     }
 
@@ -124,7 +147,7 @@ export class AIProvider {
         tokenCount += this.estimateTokensInChunk(chunk)
 
         // Calculate progress
-        const progress = Math.min(10 + (tokenCount / metadata.maxTokens) * 80, 90)
+        const progress = Math.min(10 + (tokenCount / metadata.maxTokens) * 75, 85)
 
         // Yield content chunk
         yield {
@@ -135,13 +158,45 @@ export class AIProvider {
           accumulated: accumulatedContent
         }
 
-        // Yield periodic status updates
-        if (tokenCount % 50 === 0) {
+        // Yield periodic status updates with quality hints
+        if (tokenCount % 100 === 0) {
+          let statusMessage = `Generating course content... (${tokenCount} tokens)`;
+          
+          // Add quality feedback during generation
+          if (qualityValidator && accumulatedContent.length > 500) {
+            const quickCheck = qualityValidator.calculateQualityMetrics(accumulatedContent);
+            if (quickCheck.aiPatternScore > 5) {
+              statusMessage += ' - Enhancing content specificity...';
+            } else if (quickCheck.exampleDensity < 5) {
+              statusMessage += ' - Adding practical examples...';
+            }
+          }
+
           yield {
             type: 'status',
-            message: `Generating course content... (${tokenCount} tokens)`,
+            message: statusMessage,
             progress
           }
+        }
+      }
+
+      // Quality validation phase
+      yield {
+        type: 'status',
+        message: 'Validating content quality...',
+        progress: 90
+      }
+
+      let qualityAnalysis = null;
+      if (qualityValidator) {
+        qualityAnalysis = qualityValidator.validateContent(accumulatedContent);
+        
+        yield {
+          type: 'quality_check',
+          quality_score: qualityAnalysis.score,
+          quality_metrics: qualityAnalysis.metrics,
+          recommendations: qualityAnalysis.recommendations,
+          passed: qualityAnalysis.passed
         }
       }
 
@@ -161,6 +216,7 @@ export class AIProvider {
         tokens_used: tokenCount,
         estimated_cost: this.calculateCost({ totalTokens: tokenCount }, metadata.model),
         structure,
+        quality_analysis: qualityAnalysis,
         progress: 100
       }
 
@@ -361,76 +417,14 @@ export class AIProvider {
 }
 
 /**
- * Course Generation Prompt Builder
+ * Course Generation Prompt Builder (Legacy - replaced by advanced prompt engineering)
+ * @deprecated Use AdvancedPromptBuilder from prompt-engineering.js instead
  */
 export class CoursePromptBuilder {
   static buildCoursePrompt(courseData, userProfile = null) {
-    const { courseTitle, courseContext, timePeriod, difficultyLevel } = courseData
-    
-    let prompt = `Create a comprehensive, high-quality course titled "${courseTitle}".
-
-Course Requirements:
-- Context: ${courseContext}
-- Duration: ${timePeriod}
-- Difficulty Level: ${difficultyLevel}
-- Target: Subject matter experts who want to create their first online course
-
-Generate a detailed course structure that includes:
-
-1. **Course Overview**
-   - Clear learning objectives (3-5 specific, measurable outcomes)
-   - Target audience description
-   - Prerequisites (if any)
-   - Course value proposition
-
-2. **Module Breakdown**
-   - 4-8 modules depending on the time period
-   - Each module should have:
-     * Module title and description
-     * Learning objectives for the module
-     * Estimated time to complete
-     * Key concepts covered
-
-3. **Lesson Structure** (for each module)
-   - 2-4 lessons per module
-   - Lesson titles and descriptions
-   - Core content outline
-   - Practical exercises or activities
-   - Assessment methods
-
-4. **Course Materials**
-   - Recommended resources
-   - Supplementary materials
-   - Tools or software needed
-
-5. **Assessment Strategy**
-   - Knowledge checks throughout
-   - Module assessments
-   - Final project or capstone
-   - Grading criteria
-
-**Important Guidelines:**
-- Make the content specific and actionable, not generic
-- Include real-world examples and case studies
-- Ensure progression from basic to advanced concepts
-- Focus on practical application and skill development
-- Avoid AI-generated "fluff" - provide substantial, valuable content
-- Structure for easy export to platforms like Skool, Kajabi, etc.
-
-The course should feel professionally crafted and reflect genuine expertise in the subject matter.`
-
-    // Add user profile context if available
-    if (userProfile) {
-      prompt += `\n\nInstructor Profile Context:
-- Field of Expertise: ${userProfile.field || 'Not specified'}
-- Years of Experience: ${userProfile.experience || 'Not specified'}
-- Teaching Style: ${userProfile.teachingStyle || 'Not specified'}
-- Unique Perspective: ${userProfile.uniquePerspective || 'Not specified'}
-
-Please incorporate the instructor's expertise and perspective into the course design.`
-    }
-
-    return prompt
+    // Import the new prompt builder
+    const { promptBuilder } = require('./prompt-engineering.js');
+    return promptBuilder.buildCoursePrompt(courseData, userProfile);
   }
 
   static buildModulePrompt(moduleTitle, moduleDescription, courseContext) {
