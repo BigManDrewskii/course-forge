@@ -422,9 +422,24 @@ export class AIProvider {
  */
 export class CoursePromptBuilder {
   static buildCoursePrompt(courseData, userProfile = null) {
-    // Import the new prompt builder
-    const { promptBuilder } = require('./prompt-engineering.js');
-    return promptBuilder.buildCoursePrompt(courseData, userProfile);
+    // Use basic prompt building for now (advanced features in prompt-engineering.js)
+    const { title, context, timePeriod, difficultyLevel } = courseData;
+    
+    return `Create a comprehensive course titled "${title}".
+
+Course Context: ${context}
+
+Duration: ${timePeriod}
+Difficulty Level: ${difficultyLevel}
+
+Please create a detailed course curriculum with:
+1. Course overview and learning objectives
+2. Module breakdown with clear sections
+3. Practical exercises and examples
+4. Assessment methods
+5. Resources and next steps
+
+Make the content engaging, practical, and appropriate for the specified difficulty level.`;
   }
 
   static buildModulePrompt(moduleTitle, moduleDescription, courseContext) {
